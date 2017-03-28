@@ -189,10 +189,10 @@ int main()
 
 	consoleInit(GFX_TOP,NULL);
 
-	printf("---ACNL Multi NTR Plugin Downloader V1.1---\n");
+	printf("---ACNL Multi NTR Plugin Downloader V1.1---\n\n");
 	printf("Press A to download the latest version \n");
 	printf("Press B to download 3.0 beta (for people without\nthe Amiibo update) \n");
-	printf("Press Start to exit.");
+	printf("Press Start to exit.\n");
 
 
 	gfxFlushBuffers();
