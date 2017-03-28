@@ -216,6 +216,9 @@ int    CreateFiles(void *buffer, u32 size)
     fwrite(buffer, 1, size, jap);
     fclose(jap);
 
+    // Free buffer
+    free(buffer);
+
     return (0);
 }
 
