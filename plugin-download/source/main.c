@@ -2,6 +2,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <3ds.h>
 
@@ -134,9 +137,24 @@ Result http_download(const char *url)
 	//printf("downloaded size: %"PRId32"\n",size);
 	gfxFlushBuffers();
 
+	struct stat st = {0};
+
 	FILE *usa;
 	FILE *eur;
 	FILE *jap;
+
+	if (stat("sdmc:/plugin/0004000000086200", &st) == -1) 
+	{
+    	mkdir("sdmc:/plugin/0004000000086200", 0700);
+	}
+	if (stat("sdmc:/plugin/0004000000086300", &st) == -1) 
+	{
+    	mkdir("sdmc:/plugin/0004000000086300", 0700);
+	}
+	if (stat("sdmc:/plugin/0004000000086400", &st) == -1) 
+	{
+    	mkdir("sdmc:/plugin/0004000000086400", 0700);
+	}
 
 	//delete any existing plugins in the USA, EUR or JAP directory
 	remove("sdmc:/plugin/0004000000086300/ACNL_Multi.plg");
@@ -171,9 +189,10 @@ int main()
 
 	consoleInit(GFX_TOP,NULL);
 
-	printf("---ACNL Multi NTR Plugin Downloader V1.0---\n");
+	printf("---ACNL Multi NTR Plugin Downloader V1.1---\n");
 	printf("Press A to download the latest version \n");
-	printf("Press B to download 3.0 beta (for people without\n the Amiibo update) \n");
+	printf("Press B to download 3.0 beta (for people without\nthe Amiibo update) \n");
+	printf("Press Start to exit.");
 
 
 	gfxFlushBuffers();
