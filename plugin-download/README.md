@@ -1,4 +1,8 @@
-# http
+# plugin downloader
 
-This is an example for using HTTPC. This downloads a raw image for displaying on the top-screen. The URL used here is a LAN-only one, hence this URL must be changed before building+running this example.
+Allows the user to download my plugin and places them in the correct directories.
 
+# Usage
+
+Press A to download the latest version of the plugin
+Press B to download version 3.0 of the plugin, for those who play without the Welcome Amiibo update.

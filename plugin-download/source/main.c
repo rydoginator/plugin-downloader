@@ -5,225 +5,401 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "jsmn.h"
 
 #include <3ds.h>
 
-Result http_download(const char *url)
+// Uncomment to display debug strings
+//#define DEBUG
+
+enum
 {
-	Result ret=0;
-	httpcContext context;
-	char *newurl=NULL;
-	u8* framebuf_top;
-	u32 statuscode=0;
-	u32 contentsize=0, readsize=0, size=0;
-	u8 *buf, *lastbuf;
+    Latest = 0,
+    Beta3 = 1
+};
 
-	printf("Downloading your plugin...\n");
-	gfxFlushBuffers();
+Result http_download(const char *url, u8 **output, u32 *outSize)
+{
+    Result ret=0;
+    httpcContext context;
+    char *newurl=NULL;
+    u32 statuscode=0;
+    u32 contentsize=0, readsize=0, size=0;
+    u8 *buf, *lastbuf;
 
-	do {
-		ret = httpcOpenContext(&context, HTTPC_METHOD_GET, url, 1);
-		//printf("return from httpcOpenContext: %"PRId32"\n",ret);
-		gfxFlushBuffers();
+    do {
+        ret = httpcOpenContext(&context, HTTPC_METHOD_GET, url, 1);
+        #ifdef DEBUG
+            printf("return from httpcOpenContext: %"PRId32"\n",ret);
+        #endif
 
-		// This disables SSL cert verification, so https:// will be usable
-		ret = httpcSetSSLOpt(&context, SSLCOPT_DisableVerify);
-		//printf("return from httpcSetSSLOpt: %"PRId32"\n",ret);
-		gfxFlushBuffers();
+        // This disables SSL cert verification, so https:// will be usable
+        ret = httpcSetSSLOpt(&context, SSLCOPT_DisableVerify);
+        #ifdef DEBUG
+            printf("return from httpcSetSSLOpt: %"PRId32"\n",ret);
+        #endif
 
-		// Enable Keep-Alive connections (on by default, pending ctrulib merge)
-		// ret = httpcSetKeepAlive(&context, HTTPC_KEEPALIVE_ENABLED);
-		// printf("return from httpcSetKeepAlive: %"PRId32"\n",ret);
-		// gfxFlushBuffers();
+        // Set a User-Agent header so websites can identify your application
+        ret = httpcAddRequestHeaderField(&context, "User-Agent", "httpc-example/1.0.0");
+        #ifdef DEBUG
+            printf("return from httpcAddRequestHeaderField: %"PRId32"\n",ret);
+        #endif
 
-		// Set a User-Agent header so websites can identify your application
-		ret = httpcAddRequestHeaderField(&context, "User-Agent", "httpc-example/1.0.0");
-		//printf("return from httpcAddRequestHeaderField: %"PRId32"\n",ret);
-		gfxFlushBuffers();
+        // Tell the server we can support Keep-Alive connections.
+        // This will delay connection teardown momentarily (typically 5s)
+        // in case there is another request made to the same server.
+        ret = httpcAddRequestHeaderField(&context, "Connection", "Keep-Alive");
+        #ifdef DEBUG
+            printf("return from httpcAddRequestHeaderField: %"PRId32"\n",ret);
+        #endif
 
-		// Tell the server we can support Keep-Alive connections.
-		// This will delay connection teardown momentarily (typically 5s)
-		// in case there is another request made to the same server.
-		ret = httpcAddRequestHeaderField(&context, "Connection", "Keep-Alive");
-		//printf("return from httpcAddRequestHeaderField: %"PRId32"\n",ret);
-		gfxFlushBuffers();
+        ret = httpcBeginRequest(&context);
+        if(ret!=0){
+            httpcCloseContext(&context);
+            if(newurl!=NULL) free(newurl);
+            return ret;
+        }
 
-		ret = httpcBeginRequest(&context);
-		if(ret!=0){
-			httpcCloseContext(&context);
-			if(newurl!=NULL) free(newurl);
-			return ret;
+        ret = httpcGetResponseStatusCode(&context, &statuscode);
+        if(ret!=0){
+            httpcCloseContext(&context);
+            if(newurl!=NULL) free(newurl);
+            return ret;
+        }
+
+        if ((statuscode >= 301 && statuscode <= 303) || (statuscode >= 307 && statuscode <= 308)) {
+            if(newurl==NULL) newurl = malloc(0x1000); // One 4K page for new URL
+            if (newurl==NULL){
+                httpcCloseContext(&context);
+                return -1;
+            }
+            ret = httpcGetResponseHeader(&context, "Location", newurl, 0x1000);
+            url = newurl; // Change pointer to the url that we just learned
+            #ifdef DEBUG
+                printf("redirecting to url: %s\n",url);
+            #endif
+            httpcCloseContext(&context); // Close this context before we try the next
+        }
+    } while ((statuscode >= 301 && statuscode <= 303) || (statuscode >= 307 && statuscode <= 308));
+
+    if(statuscode!=200){
+        #ifdef DEBUG
+            printf("URL returned status: %"PRId32"\n", statuscode);
+        #endif
+        httpcCloseContext(&context);
+        if(newurl!=NULL) free(newurl);
+        return -2;
+    }
+
+    // This relies on an optional Content-Length header and may be 0
+    ret = httpcGetDownloadSizeState(&context, NULL, &contentsize);
+    if(ret!=0){
+        httpcCloseContext(&context);
+        if(newurl!=NULL) free(newurl);
+        return ret;
+    }
+    #ifdef DEBUG
+        printf("reported size: %"PRId32"\n",contentsize);
+    #endif
+
+    // Start with a single page buffer
+    buf = (u8*)malloc(0x1000);
+    if(buf==NULL){
+        httpcCloseContext(&context);
+        if(newurl!=NULL) free(newurl);
+        return -1;
+    }
+
+    do {
+        // This download loop resizes the buffer as data is read.
+        ret = httpcDownloadData(&context, buf+size, 0x1000, &readsize);
+        size += readsize; 
+        if (ret == (s32)HTTPC_RESULTCODE_DOWNLOADPENDING){
+            lastbuf = buf; // Save the old pointer, in case realloc() fails.
+            buf = realloc(buf, size + 0x1000);
+            if(buf==NULL){ 
+                httpcCloseContext(&context);
+                free(lastbuf);
+                if(newurl!=NULL) free(newurl);
+                return -1;
+            }
+        }
+
+        // Display download status
+        printf("\33[2K\rDownloading:   [");
+
+        float   progress = (float)(size) / (float)(contentsize);
+        int     barWidth = 25;
+        int     pos = barWidth * progress;
+
+        for (int i = 0; i < barWidth; ++i) 
+        {
+            if (i < pos) printf("=");
+            else if (i == pos) printf(">");
+            else printf(" ");
+        }
+        printf("] %d%%", (int)(progress * 100.0f));
+        // Flush and swap framebuffers
+        gfxFlushBuffers();
+        gfxSwapBuffers();
+
+    } while (ret == (s32)HTTPC_RESULTCODE_DOWNLOADPENDING);
+
+    printf("\n");
+
+    if(ret!=0)
+    {
+        httpcCloseContext(&context);
+        if(newurl!=NULL) free(newurl);
+        free(buf);
+        return -1;
+    }
+
+    // Resize the buffer back down to our actual final size
+    lastbuf = buf;
+    buf = realloc(buf, size);
+    if(buf==NULL){ // realloc() failed.
+        httpcCloseContext(&context);
+        free(lastbuf);
+        if(newurl!=NULL) free(newurl);
+        return -1;
+    }
+
+    #ifdef DEBUG
+        printf("downloaded size: %"PRId32"\n",size);
+    #endif
+
+    *output = buf;
+    *outSize = size;
+    return 0;
+}
+
+int    CreateFiles(void *buffer, u32 size)
+{
+    struct stat st = {0};
+
+    FILE *usa;
+    FILE *eur;
+    FILE *jap;
+
+
+    if (stat("sdmc:/plugin/0004000000086200", &st) == -1) 
+    {
+        mkdir("sdmc:/plugin/0004000000086200", 0700);
+    }
+    if (stat("sdmc:/plugin/0004000000086300", &st) == -1) 
+    {
+        mkdir("sdmc:/plugin/0004000000086300", 0700);
+    }
+    if (stat("sdmc:/plugin/0004000000086400", &st) == -1) 
+    {
+        mkdir("sdmc:/plugin/0004000000086400", 0700);
+    }
+
+    // Delete any existing plugins in the USA, EUR or JAP directory
+    remove("sdmc:/plugin/0004000000086300/ACNL_Multi.plg");
+    remove("sdmc:/plugin/0004000000086200/ACNL_Multi.plg");
+    remove("sdmc:/plugin/0004000000086400/ACNL_Multi.plg");
+    remove("sdmc:/plugin/0004000000086300/ACNL_Multi_USA.plg");
+    remove("sdmc:/plugin/0004000000086200/ACNL_Multi_JAP.plg");
+    remove("sdmc:/plugin/0004000000086400/ACNL_Multi_EUR.plg");
+
+    if (!buffer)
+        return (-1);
+
+    usa = fopen("sdmc:/plugin/0004000000086300/ACNL_MULTI.plg", "w+");
+    fwrite(buffer, 1, size, usa);
+    fclose(usa);
+    eur = fopen("sdmc:/plugin/0004000000086400/ACNL_MULTI.plg", "w+");
+    fwrite(buffer, 1, size, eur);
+    fclose(eur);
+    jap = fopen("sdmc:/plugin/0004000000086200/ACNL_MULTI.plg", "w+");
+    fwrite(buffer, 1, size, jap);
+    fclose(jap);
+
+    // Free buffer
+    free(buffer);
+
+    return (0);
+}
+
+int    DownloadPlugin(int version)
+{
+    static const  char *urls[2] = 
+    {
+        "https://github.com/RyDog199/ACNL-NTR-Cheats/blob/master/ACNL_MULTI.plg?raw=true",
+        "https://github.com/RyDog199/ACNL-NTR-Cheats/releases/download/v3.0B1/ACNL_MULTI.plg"
+    };
+    static const  char *downloadVersion[2] = 
+    {
+        "Updating plugin to the last version...\n\n",
+        "Downloading 3.0 Beta...\n\n"
+    };
+
+    u8      *buffer = NULL;
+    u32     size = 0;
+
+    printf(downloadVersion[version]);
+
+    if (!http_download(urls[version], &buffer, &size))
+    {
+        if (!CreateFiles(buffer, size))
+        {
+            printf("Plugin has been downloaded.\n\n");
+            return (0);
+        }
+        else
+        {
+            printf("An error occurred while creating the files !\n");
+        }
+    }
+    else
+    {
+        printf("Download failed !\n");
+    }
+    return (-1);    
+}
+
+static int jsoneq(const char *json, jsmntok_t *tok, const char *s) {
+	if (tok->type == JSMN_STRING && (int) strlen(s) == tok->end - tok->start &&
+			strncmp(json + tok->start, s, tok->end - tok->start) == 0) {
+		return 0;
+	}
+	return -1;
+}
+
+char* readFile(char* filename)
+{
+    FILE* file = fopen(filename,"r");
+    if(file == NULL)
+    {
+        return NULL;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long int size = ftell(file);
+    rewind(file);
+
+    char* content = calloc(size + 1, 1);
+
+    fread(content,1,size,file);
+
+    return content;
+}
+
+
+int 	downloadUpdate(void)
+{
+    u8      *buffer = NULL;
+    u32     size = 0;
+    int 	i;
+    int 	r;
+    FILE 	*json;
+    jsmn_parser p;
+    jsmntok_t t[128];
+    static const char *JSON_STRING;
+
+
+
+    if (!http_download("https://api.github.com/repos/RyDog199/plugin-downloader/releases/latest", &buffer, &size))
+    {
+		json = fopen("update.json", "w+");
+		fwrite(buffer, 1, size, json);
+		fseek(json, SEEK_SET, 0);
+		fclose(json);
+		free(buffer);
+		JSON_STRING = readFile("update.json");
+		jsmn_init(&p);
+		r = jsmn_parse(&p, JSON_STRING, strlen(JSON_STRING), t, sizeof(t)/sizeof(t[0]));
+		if (r < 0) 
+		{
+			printf("Failed to parse JSON: %d\n", r);
+			return 1;
 		}
+			if (r < 1 || t[0].type != JSMN_OBJECT) {
+		printf("Object expected\n");
+		return 1;
+	}
 
-		ret = httpcGetResponseStatusCode(&context, &statuscode);
-		if(ret!=0){
-			httpcCloseContext(&context);
-			if(newurl!=NULL) free(newurl);
-			return ret;
+	/* Loop over all keys of the root object */
+	for (i = 1; i < r; i++) {
+		if (jsoneq(JSON_STRING, &t[i], "url") == 0) {
+			/* We may use strndup() to fetch string value */
+			printf("- Version: %.*s\n", t[i+1].end-t[i+1].start,
+					JSON_STRING + t[i+1].start);
+			i++;
 		}
-
-		if ((statuscode >= 301 && statuscode <= 303) || (statuscode >= 307 && statuscode <= 308)) {
-			if(newurl==NULL) newurl = malloc(0x1000); // One 4K page for new URL
-			if (newurl==NULL){
-				httpcCloseContext(&context);
-				return -1;
-			}
-			ret = httpcGetResponseHeader(&context, "Location", newurl, 0x1000);
-			url = newurl; // Change pointer to the url that we just learned
-			//printf("redirecting to url: %s\n",url);
-			httpcCloseContext(&context); // Close this context before we try the next
-		}
-	} while ((statuscode >= 301 && statuscode <= 303) || (statuscode >= 307 && statuscode <= 308));
-
-	if(statuscode!=200){
-		//printf("URL returned status: %"PRId32"\n", statuscode);
-		httpcCloseContext(&context);
-		if(newurl!=NULL) free(newurl);
-		return -2;
+		return 0;
 	}
-
-	// This relies on an optional Content-Length header and may be 0
-	ret=httpcGetDownloadSizeState(&context, NULL, &contentsize);
-	if(ret!=0){
-		httpcCloseContext(&context);
-		if(newurl!=NULL) free(newurl);
-		return ret;
-	}
-
-	//printf("reported size: %"PRId32"\n",contentsize);
-	gfxFlushBuffers();
-
-	// Start with a single page buffer
-	buf = (u8*)malloc(0x1000);
-	if(buf==NULL){
-		httpcCloseContext(&context);
-		if(newurl!=NULL) free(newurl);
-		return -1;
-	}
-
-	do {
-		// This download loop resizes the buffer as data is read.
-		ret = httpcDownloadData(&context, buf+size, 0x1000, &readsize);
-		size += readsize; 
-		if (ret == (s32)HTTPC_RESULTCODE_DOWNLOADPENDING){
-				lastbuf = buf; // Save the old pointer, in case realloc() fails.
-				buf = realloc(buf, size + 0x1000);
-				if(buf==NULL){ 
-					httpcCloseContext(&context);
-					free(lastbuf);
-					if(newurl!=NULL) free(newurl);
-					return -1;
-				}
-			}
-	} while (ret == (s32)HTTPC_RESULTCODE_DOWNLOADPENDING);	
-
-	if(ret!=0){
-		httpcCloseContext(&context);
-		if(newurl!=NULL) free(newurl);
-		free(buf);
-		return -1;
-	}
-
-	// Resize the buffer back down to our actual final size
-	lastbuf = buf;
-	buf = realloc(buf, size);
-	if(buf==NULL){ // realloc() failed.
-		httpcCloseContext(&context);
-		free(lastbuf);
-		if(newurl!=NULL) free(newurl);
-		return -1;
-	}
-
-	//printf("downloaded size: %"PRId32"\n",size);
-	gfxFlushBuffers();
-
-	struct stat st = {0};
-
-	FILE *usa;
-	FILE *eur;
-	FILE *jap;
-
-	if (stat("sdmc:/plugin/0004000000086200", &st) == -1) 
-	{
-    	mkdir("sdmc:/plugin/0004000000086200", 0700);
-	}
-	if (stat("sdmc:/plugin/0004000000086300", &st) == -1) 
-	{
-    	mkdir("sdmc:/plugin/0004000000086300", 0700);
-	}
-	if (stat("sdmc:/plugin/0004000000086400", &st) == -1) 
-	{
-    	mkdir("sdmc:/plugin/0004000000086400", 0700);
-	}
-
-	//delete any existing plugins in the USA, EUR or JAP directory
-	remove("sdmc:/plugin/0004000000086300/ACNL_Multi.plg");
-	remove("sdmc:/plugin/0004000000086200/ACNL_Multi.plg");
-	remove("sdmc:/plugin/0004000000086400/ACNL_Multi.plg");
-	remove("sdmc:/plugin/0004000000086300/ACNL_Multi_USA.plg");
-	remove("sdmc:/plugin/0004000000086200/ACNL_Multi_JAP.plg");
-	remove("sdmc:/plugin/0004000000086400/ACNL_Multi_EUR.plg");
-	usa = fopen("sdmc:/plugin/0004000000086300/ACNL_MULTI.plg", "w+");
-	fwrite(buf , 1 , size , usa );
-	fclose(usa);
-	eur = fopen("sdmc:/plugin/0004000000086400/ACNL_MULTI.plg", "w+");
-	fwrite(buf , 1 , size , eur );
-	fclose(eur);
-	jap = fopen("sdmc:/plugin/0004000000086200/ACNL_MULTI.plg", "w+");
-	fwrite(buf , 1 , size , jap );
-	fclose(jap);
-
-	printf("Done!\n");
-
-
-
-
-	return 0;
+    }
+    else
+    {
+    	printf("An error occured while checking for an update !\n");
+    }
+    return (-1);
 }
 
 int main()
 {
-	Result ret=0;
-	gfxInitDefault();
-	httpcInit(0); // Buffer size when POST/PUT.
+    bool    isRunning = true;
 
-	consoleInit(GFX_TOP,NULL);
+    gfxInitDefault();
+    httpcInit(0); // Buffer size when POST/PUT.
 
-	printf("---ACNL Multi NTR Plugin Downloader V1.1---\n\n");
-	printf("Press A to download the latest version \n");
-	printf("Press B to download 3.0 beta (for people without\nthe Amiibo update) \n");
-	printf("Press Start to exit.\n");
+    consoleInit(GFX_TOP,NULL);
 
 
-	gfxFlushBuffers();
+
+    printf("--- ACNL Multi NTR Plugin Downloader V1.1 ---\n\n");
+    printf("Press A to download the latest version \n");
+    printf("Press B to download 3.0 beta (for people without\nthe Amiibo update) \n");
+    printf("Press Start to exit.\n\n");
+    //check for an update
+    printf("Checking for an update...");
+    svcSleepThread(2000000000);
+    downloadUpdate();
 
 
-	while (aptMainLoop())
-	{
-		gspWaitForVBlank();
-		hidScanInput();
 
-		u32 kDown = hidKeysDown();
+    gfxFlushBuffers();
 
-		if (kDown == KEY_A)
-		{
-			ret=http_download("https://github.com/RyDog199/ACNL-NTR-Cheats/blob/master/ACNL_MULTI.plg?raw=true");
-		}
-		if (kDown == KEY_B)
-		{
-			ret=http_download("https://github.com/RyDog199/ACNL-NTR-Cheats/releases/download/v3.0B1/ACNL_MULTI.plg");
-		}
-		if (kDown & KEY_START)
-			break; // break in order to return to hbmenu
 
-		// Flush and swap framebuffers
-		gfxFlushBuffers();
-		gfxSwapBuffers();
-	}
+    while (isRunning && aptMainLoop())
+    {
+        gspWaitForVBlank();
+        hidScanInput();
 
-	// Exit services
-	httpcExit();
-	gfxExit();
-	return 0;
+        u32 kDown = hidKeysDown();
+
+        if (kDown == KEY_A)
+        {
+            if (!DownloadPlugin(Latest))
+            {
+                printf("Returning to homemenu...\n");
+                isRunning = false;
+            }
+        }
+        if (kDown == KEY_B)
+        {
+            if (!DownloadPlugin(Beta3))
+            {
+                printf("Returning to homemenu...\n");
+                isRunning = false;
+            }
+        }
+        if (kDown & KEY_START)
+            break; // break in order to return to hbmenu
+
+        // Flush and swap framebuffers
+        gfxFlushBuffers();
+        gfxSwapBuffers();
+    }
+
+    if (!isRunning)
+        svcSleepThread(2000000000);
+    // Exit services
+    httpcExit();
+    gfxExit();
+    return 0;
 }
 
