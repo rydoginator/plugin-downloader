@@ -12,6 +12,7 @@
 // Uncomment to display debug strings
 //#define DEBUG
 
+
 enum
 {
     Latest = 0,
@@ -323,20 +324,31 @@ int 	downloadUpdate(void)
 
 	/* Loop over all keys of the root object */
 	for (i = 1; i < r; i++) {
-		if (jsoneq(JSON_STRING, &t[i], "url") == 0) {
+		if (jsoneq(JSON_STRING, &t[i], "url") == 0) //this one works
+		{
 			/* We may use strndup() to fetch string value */
 			printf("- Version: %.*s\n", t[i+1].end-t[i+1].start,
 					JSON_STRING + t[i+1].start);
 			i++;
 		}
-		return 0;
+		else if (jsoneq(JSON_STRING, &t[i], "tag_name") == 0) //this one returns an error
+		{
+			/* We may want to do strtol() here to get numeric value */
+			printf("- UID: %.*s\n", t[i+1].end-t[i+1].start,
+					JSON_STRING + t[i+1].start);
+			i++;
+		}
+		else {
+			printf("Unexpected key: %.*s\n", t[i].end-t[i].start,
+					JSON_STRING + t[i].start);
+		}
 	}
     }
     else
     {
     	printf("An error occured while checking for an update !\n");
+    	return (-1);
     }
-    return (-1);
 }
 
 int main()
@@ -347,8 +359,6 @@ int main()
     httpcInit(0); // Buffer size when POST/PUT.
 
     consoleInit(GFX_TOP,NULL);
-
-
 
     printf("--- ACNL Multi NTR Plugin Downloader V1.1 ---\n\n");
     printf("Press A to download the latest version \n");
