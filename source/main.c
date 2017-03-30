@@ -13,6 +13,8 @@
 //#define DEBUG
 
 
+static const char  *g_version = "v1.3";
+
 enum
 {
     Latest = 0,
@@ -126,20 +128,23 @@ Result http_download(const char *url, u8 **output, u32 *outSize)
             }
         }
 
-        // Display download status
-        printf("\33[2K\rDownloading:   [");
-
-        float   progress = (float)(size) / (float)(contentsize);
-        int     barWidth = 25;
-        int     pos = barWidth * progress;
-
-        for (int i = 0; i < barWidth; ++i) 
+        // Display download status only if the size is greater than 10kb
+        if (size > 10000)
         {
-            if (i < pos) printf("=");
-            else if (i == pos) printf(">");
-            else printf(" ");
-        }
-        printf("] %d%%", (int)(progress * 100.0f));
+        	printf("\33[2K\rDownloading:   [");
+
+	        float   progress = (float)(size) / (float)(contentsize);
+	        int     barWidth = 25;
+	        int     pos = barWidth * progress;
+
+	        for (int i = 0; i < barWidth; ++i) 
+	        {
+	            if (i < pos) printf("=");
+	            else if (i == pos) printf(">");
+	            else printf(" ");
+	        }
+	        printf("] %d%%", (int)(progress * 100.0f));
+    	}
         // Flush and swap framebuffers
         gfxFlushBuffers();
         gfxSwapBuffers();
@@ -288,66 +293,63 @@ char* readFile(char* filename)
     return content;
 }
 
-
-int 	downloadUpdate(void)
+int     downloadUpdate(void)
 {
-    u8      *buffer = NULL;
-    u32     size = 0;
-    int 	i;
-    int 	r;
-    FILE 	*json;
-    jsmn_parser p;
-    jsmntok_t t[128];
-    static const char *JSON_STRING;
+    char            *json = NULL;
+    u32             size = 0;
+    int             i;
+    int             r;
+    int 			ret;
+    jsmn_parser     jParser;
+    jsmntok_t       tokens[128];
 
 
 
-    if (!http_download("https://api.github.com/repos/RyDog199/plugin-downloader/releases/latest", &buffer, &size))
+    if (!http_download("https://api.github.com/repos/RyDog199/plugin-downloader/releases/latest", (u8 *)&json, &size))
     {
-		json = fopen("update.json", "w+");
-		fwrite(buffer, 1, size, json);
-		fseek(json, SEEK_SET, 0);
-		fclose(json);
-		free(buffer);
-		JSON_STRING = readFile("update.json");
-		jsmn_init(&p);
-		r = jsmn_parse(&p, JSON_STRING, strlen(JSON_STRING), t, sizeof(t)/sizeof(t[0]));
-		if (r < 0) 
-		{
-			printf("Failed to parse JSON: %d\n", r);
-			return 1;
-		}
-			if (r < 1 || t[0].type != JSMN_OBJECT) {
-		printf("Object expected\n");
-		return 1;
-	}
+        jsmn_init(&jParser);
+        r = jsmn_parse(&jParser, json, size, tokens, sizeof(tokens)/sizeof(tokens[0]));
+        if (r < 0) 
+        {
+            printf("Failed to parse JSON: %d\n", r);
+            return 1;
+        }
+        
+        if (r < 1 || tokens[0].type != JSMN_OBJECT) 
+        {
+            printf("Object expected\n");
+            return 1;
+        }
 
-	/* Loop over all keys of the root object */
-	for (i = 1; i < r; i++) {
-		if (jsoneq(JSON_STRING, &t[i], "url") == 0) //this one works
-		{
-			/* We may use strndup() to fetch string value */
-			printf("- Version: %.*s\n", t[i+1].end-t[i+1].start,
-					JSON_STRING + t[i+1].start);
-			i++;
-		}
-		else if (jsoneq(JSON_STRING, &t[i], "tag_name") == 0) //this one returns an error
-		{
-			/* We may want to do strtol() here to get numeric value */
-			printf("- UID: %.*s\n", t[i+1].end-t[i+1].start,
-					JSON_STRING + t[i+1].start);
-			i++;
-		}
-		else {
-			printf("Unexpected key: %.*s\n", t[i].end-t[i].start,
-					JSON_STRING + t[i].start);
-		}
-	}
+        /* Loop over all keys of the root object */
+        for (i = 1; i < r; i++) 
+        {
+            if (jsoneq(json, &tokens[i], "tag_name") == 0) 
+            {
+            	ret = strcmp(json + tokens[i + 1].start, g_version);
+
+                if (ret < 0)
+                {
+                    printf("New update! Version: %.*s\n", tokens[i + 1].end-tokens[i + 1].start,
+                        json + tokens[i + 1].start);
+                    i++;
+                }
+            }
+            /*if (jsoneq(json, &tokens[i], "body") == 0) 
+            {
+                if (ret < 0)
+                {
+                    printf("What's new: %.*s\n", tokens[i + 1].end-tokens[i + 1].start,
+                        json + tokens[i + 1].start);
+                    i++;
+                }
+            }*/
+        }
     }
     else
     {
-    	printf("An error occured while checking for an update !\n");
-    	return (-1);
+        printf("An error occured while checking for an update !\n");
+        return (-1);
     }
 }
 
@@ -360,14 +362,13 @@ int main()
 
     consoleInit(GFX_TOP,NULL);
 
-    printf("--- ACNL Multi NTR Plugin Downloader V1.1 ---\n\n");
+    printf("--- ACNL Multi NTR Plugin Downloader %s ---\n\n", g_version);
     printf("Press A to download the latest version \n");
     printf("Press B to download 3.0 beta (for people without\nthe Amiibo update) \n");
+    printf("Press Y to check for updates.\n");
     printf("Press Start to exit.\n\n");
     //check for an update
-    printf("Checking for an update...");
-    svcSleepThread(2000000000);
-    downloadUpdate();
+    
 
 
 
@@ -380,6 +381,12 @@ int main()
         hidScanInput();
 
         u32 kDown = hidKeysDown();
+
+        if (kDown == KEY_Y)
+        {
+            printf("Checking for an update...");
+            downloadUpdate();
+        }
 
         if (kDown == KEY_A)
         {
