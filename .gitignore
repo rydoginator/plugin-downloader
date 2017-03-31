@@ -40,10 +40,10 @@ $RECYCLE.BIN/
 .VolumeIcon.icns
 
 # Useless files that the compiler creates
-.3dsx
-.sdmh
-.elf
-/build
+*.3dsx
+*.sdmh
+*.elf
+*/build
 
 
 # Directories potentially created on remote AFP share

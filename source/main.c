@@ -9,17 +9,167 @@
 
 #include <3ds.h>
 
+
+#define ANSI_COLOR_RED     "\x1b[31m"
+#define ANSI_COLOR_GREEN   "\x1b[32m"
+#define ANSI_COLOR_YELLOW  "\x1b[33m"
+#define ANSI_COLOR_BLUE    "\x1b[34m"
+#define ANSI_COLOR_MAGENTA "\x1b[35m"
+#define ANSI_COLOR_CYAN    "\x1b[36m"
+#define ANSI_COLOR_RESET   "\x1b[0m"
+
 // Uncomment to display debug strings
 //#define DEBUG
 
 
-static const char  *g_version = "v1.3";
+static const char  *g_version = "v1.2";
 
 enum
 {
     Latest = 0,
     Beta3 = 1
 };
+
+// str_replace(haystack, haystacksize, oldneedle, newneedle) --
+//  Search haystack and replace all occurences of oldneedle with newneedle.
+//  Resulting haystack contains no more than haystacksize characters (including the '\0').
+//  If haystacksize is too small to make the replacements, do not modify haystack at all.
+//
+// RETURN VALUES
+// str_replace() returns haystack on success and NULL on failure. 
+// Failure means there was not enough room to replace all occurences of oldneedle.
+// Success is returned otherwise, even if no replacement is made.
+char *str_replace(char *haystack, size_t haystacksize,
+                    const char *oldneedle, const char *newneedle);
+
+// ------------------------------------------------------------------
+// Implementation of function
+// ------------------------------------------------------------------
+#define SUCCESS (char *)haystack
+#define FAILURE (void *)NULL
+
+static bool
+locate_forward(char **needle_ptr, char *read_ptr, 
+        const char *needle, const char *needle_last);
+static bool
+locate_backward(char **needle_ptr, char *read_ptr, 
+        const char *needle, const char *needle_last);
+
+char *str_replace(char *haystack, size_t haystacksize,
+                    const char *oldneedle, const char *newneedle)
+{   
+    size_t oldneedle_len = strlen(oldneedle);
+    size_t newneedle_len = strlen(newneedle);
+    char *oldneedle_ptr;    // locates occurences of oldneedle
+    char *read_ptr;         // where to read in the haystack
+    char *write_ptr;        // where to write in the haystack
+    const char *oldneedle_last =  // the last character in oldneedle
+        oldneedle +             
+        oldneedle_len - 1;      
+
+    // Case 0: oldneedle is empty
+    if (oldneedle_len == 0)
+        return SUCCESS;     // nothing to do; define as success
+
+    // Case 1: newneedle is not longer than oldneedle
+    if (newneedle_len <= oldneedle_len) {       
+        // Pass 1: Perform copy/replace using read_ptr and write_ptr
+        for (oldneedle_ptr = (char *)oldneedle,
+            read_ptr = haystack, write_ptr = haystack; 
+            *read_ptr != '\0';
+            read_ptr++, write_ptr++)
+        {
+            *write_ptr = *read_ptr;         
+            bool found = locate_forward(&oldneedle_ptr, read_ptr,
+                        oldneedle, oldneedle_last);
+            if (found)  {   
+                // then perform update
+                write_ptr -= oldneedle_len;
+                memcpy(write_ptr+1, newneedle, newneedle_len);
+                write_ptr += newneedle_len;
+            }               
+        } 
+        *write_ptr = '\0';
+        return SUCCESS;
+    }
+
+    // Case 2: newneedle is longer than oldneedle
+    else {
+        size_t diff_len =       // the amount of extra space needed 
+            newneedle_len -     // to replace oldneedle with newneedle
+            oldneedle_len;      // in the expanded haystack
+
+        // Pass 1: Perform forward scan, updating write_ptr along the way
+        for (oldneedle_ptr = (char *)oldneedle,
+            read_ptr = haystack, write_ptr = haystack;
+            *read_ptr != '\0';
+            read_ptr++, write_ptr++)
+        {
+            bool found = locate_forward(&oldneedle_ptr, read_ptr, 
+                        oldneedle, oldneedle_last);
+            if (found) {    
+                // then advance write_ptr
+                write_ptr += diff_len;
+            }
+            if (write_ptr >= haystack+haystacksize)
+                return FAILURE; // no more room in haystack
+        }
+
+        // Pass 2: Walk backwards through haystack, performing copy/replace
+        for (oldneedle_ptr = (char *)oldneedle_last;
+            write_ptr >= haystack;
+            write_ptr--, read_ptr--)
+        {
+            *write_ptr = *read_ptr;
+            bool found = locate_backward(&oldneedle_ptr, read_ptr, 
+                        oldneedle, oldneedle_last);
+            if (found) {    
+                // then perform replacement
+                write_ptr -= diff_len;
+                memcpy(write_ptr, newneedle, newneedle_len);
+            }   
+        }
+        return SUCCESS;
+    }
+}
+
+// locate_forward: compare needle_ptr and read_ptr to see if a match occured
+// needle_ptr is updated as appropriate for the next call
+// return true if match occured, false otherwise
+static inline bool 
+locate_forward(char **needle_ptr, char *read_ptr,
+        const char *needle, const char *needle_last)
+{
+    if (**needle_ptr == *read_ptr) {
+        (*needle_ptr)++;
+        if (*needle_ptr > needle_last) {
+            *needle_ptr = (char *)needle;
+            return true;
+        }
+    }
+    else 
+        *needle_ptr = (char *)needle;
+    return false;
+}
+
+// locate_backward: compare needle_ptr and read_ptr to see if a match occured
+// needle_ptr is updated as appropriate for the next call
+// return true if match occured, false otherwise
+static inline bool
+locate_backward(char **needle_ptr, char *read_ptr, 
+        const char *needle, const char *needle_last)
+{
+    if (**needle_ptr == *read_ptr) {
+        (*needle_ptr)--;
+        if (*needle_ptr < needle) {
+            *needle_ptr = (char *)needle_last;
+            return true;
+        }
+    }
+    else 
+        *needle_ptr = (char *)needle_last;
+    return false;
+}
 
 Result http_download(const char *url, u8 **output, u32 *outSize)
 {
@@ -293,9 +443,73 @@ char* readFile(char* filename)
     return content;
 }
 
+static Result startInstall(u32 *handle)
+{
+    return (AM_StartCiaInstall(MEDIATYPE_SD, handle));
+}
+
+static Result cancelInstall(u32 handle)
+{
+    return (AM_CancelCIAInstall(handle));
+}
+
+static Result endInstall(u32 handle)
+{
+    return (AM_FinishCiaInstall(handle));
+}
+
+Result installUpdate(const char *url)
+{
+    int userChoice = 0;
+
+    u8      *buffer = NULL;
+    u32     size = 0;
+    u32     res;
+
+    while (userChoice == 0)
+    {
+        hidScanInput();
+        u32 kDown = hidKeysDown();
+        if (kDown == KEY_A)
+        {
+            if (!http_download(url, &buffer, &size))
+            {
+                res = startInstall(&buffer);
+                if (res == 0)
+                {
+                    printf("Update installed!\n");
+                    userChoice = 1;
+                    return 0;
+                }
+                else
+                {
+                    printf("Unknown error occured\n");
+                    userChoice = 1;
+                    return -2;
+                }
+                printf("ok");
+            }
+            else
+            {
+                printf("Error downloading updates!\n");
+                return -1;
+            }
+
+        }
+        if (kDown == KEY_B)
+        {
+            printf("Aborted!\n");
+            userChoice = 1;
+            return 1;
+        }
+    }
+    return 0;      
+}
 int     downloadUpdate(void)
 {
     char            *json = NULL;
+    char            *changeLog;
+    static const char  *urlDownload[89];
     u32             size = 0;
     int             i;
     int             r;
@@ -304,20 +518,19 @@ int     downloadUpdate(void)
     jsmntok_t       tokens[128];
 
 
-
     if (!http_download("https://api.github.com/repos/RyDog199/plugin-downloader/releases/latest", (u8 *)&json, &size))
     {
         jsmn_init(&jParser);
         r = jsmn_parse(&jParser, json, size, tokens, sizeof(tokens)/sizeof(tokens[0]));
         if (r < 0) 
         {
-            printf("Failed to parse JSON: %d\n", r);
+            printf(ANSI_COLOR_RED "Failed to parse JSON: %d\n" ANSI_COLOR_RESET, r);
             return 1;
         }
         
         if (r < 1 || tokens[0].type != JSMN_OBJECT) 
         {
-            printf("Object expected\n");
+            printf(ANSI_COLOR_RED "Object expected\n" ANSI_COLOR_RESET);
             return 1;
         }
 
@@ -330,20 +543,34 @@ int     downloadUpdate(void)
 
                 if (ret < 0)
                 {
-                    printf("New update! Version: %.*s\n", tokens[i + 1].end-tokens[i + 1].start,
+                    printf(ANSI_COLOR_GREEN "New update! Version: %.*s\n" ANSI_COLOR_RESET, tokens[i + 1].end-tokens[i + 1].start,
                         json + tokens[i + 1].start);
                     i++;
                 }
             }
-            /*if (jsoneq(json, &tokens[i], "body") == 0) 
+            if (jsoneq(json, &tokens[i], "browser_download_url") == 0) 
+            {
+                strncpy(urlDownload, json + tokens[i + 1].start, 89);
+                str_replace(urlDownload, 89, "\"}", "");
+                i++;
+            }
+            if (jsoneq(json, &tokens[i], "body") == 0) 
             {
                 if (ret < 0)
                 {
-                    printf("What's new: %.*s\n", tokens[i + 1].end-tokens[i + 1].start,
-                        json + tokens[i + 1].start);
-                    i++;
+                    changeLog = json + tokens[i + 1].start;
+
+                    str_replace(changeLog, tokens[i + 1].end-tokens[i + 1].start, "# ", "");
+                    str_replace(changeLog, tokens[i + 1].end-tokens[i + 1].start, "What's New\\r\\n* ", "\n\n* ");
+                    str_replace(changeLog, tokens[i + 1].end-tokens[i + 1].start, "\\n", "\n");
+                    str_replace(changeLog, tokens[i + 1].end-tokens[i + 1].start, "\\r", "\n");
+                    str_replace(changeLog, tokens[i + 1].end-tokens[i + 1].start, ".\"}", "");
+                    printf("What's new: %s\n\n", changeLog);
+                    printf("Press A to install\n");
+                    printf("Press B to abort\n");
+                    installUpdate(urlDownload);
                 }
-            }*/
+            }
         }
     }
     else
@@ -351,6 +578,7 @@ int     downloadUpdate(void)
         printf("An error occured while checking for an update !\n");
         return (-1);
     }
+    return 0;
 }
 
 int main()
