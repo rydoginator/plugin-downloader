@@ -41,9 +41,9 @@ $RECYCLE.BIN/
 
 # Useless files that the compiler creates
 *.3dsx
-*.sdmh
+*.smdh
 *.elf
-*/build
+/build
 
 
 # Directories potentially created on remote AFP share
